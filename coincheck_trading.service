@@ -1,0 +1,16 @@
+[Unit]
+Description=Coincheck Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/coincheck_trading
+ExecStart=/home/ubuntu/coincheck_trading/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+# Optional: Load env vars if not handled by app, but app uses python-dotenv
+EnvironmentFile=/home/ubuntu/crypto_common/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Environment Variables (Sensitive Data)
+.env
+
+# Logs
+*.log
+trading.log
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+
+# Direnv
+.direnv/
+# You might want to keep .envrc if it only contains 'source ...'
+# but ignore it if it contains secrets. Currently it is safe but better to be cautious if user edits it.
+# .envrc
+
+# Helper scripts (optional)
+# debug_signature.py
+
+# Runtime order persistence
+live_buy_order.json
+closed_buy_order.json
