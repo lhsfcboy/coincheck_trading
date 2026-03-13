@@ -1,4 +1,4 @@
-.PHONY: monitor bounce stop install clean log nohup ps
+.PHONY: monitor bounce stop clean log ps
 
 PY := /home/ubuntu/coincheck_trading/.venv/bin/python
 
@@ -23,8 +23,6 @@ stop:
 	@echo "当前服务状态: $$(sudo systemctl is-active coincheck_trading || true)"
 	@$(MAKE) ps
 
-install:
-	@python3 -m pip install -r requirements.txt
 
 clean:
 	@echo "停止所有 coincheck_trading 程序..."
@@ -46,10 +44,6 @@ log:
 	@test -f trading.log || touch trading.log
 	@tail -f trading.log
 
-nohup:
-	@nohup $(PY) main.py > /dev/null 2>&1 &
-	@echo "已通过 nohup 启动 main.py!"
-	@echo "======================"
 
 monitor:
 	@$(PY) monitor.py
