@@ -24,6 +24,8 @@ class CoincheckTrader:
         buy_timeout_seconds,
         default_wait_seconds,
         balance_threshold_ratio,
+        recent_order_count_window_seconds,
+        recent_order_threshold,
         log_prefix=None,
     ):
         logger_prefix = getattr(logger, "_prefix", None) if isinstance(logger, PrefixedLogger) else None
@@ -64,6 +66,8 @@ class CoincheckTrader:
         self.buy_timeout_seconds = max(0, int(buy_timeout_seconds))
 
         self.balance_threshold_ratio = float(balance_threshold_ratio)
+        self.recent_order_count_window_seconds = max(0, int(recent_order_count_window_seconds))
+        self.recent_order_threshold = max(0, int(recent_order_threshold))
         self.balance_monitor = BalanceMonitor(self.logger, config, self.log_prefix)
 
     def _fetch_order_snapshot(self, order_id, context):
@@ -147,6 +151,101 @@ class CoincheckTrader:
             full_msg += f"--- Response Info ---\n{json.dumps(response, indent=2, ensure_ascii=False)}\n\n"
 
         self._send_email_alert(f"API Business Error - {context}", full_msg)
+
+    def _sleep_buy_phase_cooldown(self, reason):
+        if self.sell_cooldown_seconds:
+            self.logger.info(
+                f"[BUY ] {reason} Cooling down for {self.sell_cooldown_seconds} seconds."
+            )
+            time.sleep(self.sell_cooldown_seconds)
+
+    def _parse_order_timestamp_utc(self, value):
+        if value in (None, ""):
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _count_recent_unfilled_sell_orders(self):
+        active_order_response = self.api.get_active_orders(symbol=self.symbol)
+        if active_order_response is None:
+            raise RuntimeError("Failed to fetch active orders.")
+        if not isinstance(active_order_response, dict):
+            raise RuntimeError("Invalid active orders response format.")
+
+        active_orders = active_order_response.get("list")
+        if not isinstance(active_orders, list):
+            raise RuntimeError("Invalid active orders response format.")
+
+        now_utc = datetime.now(timezone.utc)
+        cutoff_utc = now_utc - timedelta(seconds=self.recent_order_count_window_seconds)
+
+        recent_sell_count = 0
+        for order in active_orders:
+            if not isinstance(order, dict):
+                continue
+
+            side = str(order.get("side") or "").upper()
+            if side != "SELL":
+                continue
+
+            created_at = self._parse_order_timestamp_utc(order.get("timestamp"))
+            if created_at is None:
+                continue
+
+            if created_at >= cutoff_utc:
+                recent_sell_count += 1
+
+        return recent_sell_count
+
+    def _validate_recent_unfilled_sell_order_limit(self):
+        window_seconds = max(0, int(self.recent_order_count_window_seconds))
+        threshold = max(0, int(self.recent_order_threshold))
+
+        if window_seconds <= 0:
+            return True
+
+        try:
+            recent_sell_count = self._count_recent_unfilled_sell_orders()
+        except CoincheckBusinessError as e:
+            self.logger.warning(f"[BUY ] Failed to check recent SELL orders: {e}")
+            self._send_business_error_alert("RecentOpenSellOrderCheck", e)
+            self._sleep_buy_phase_cooldown("Recent SELL-order check unavailable.")
+            return False
+        except Exception as e:
+            self.logger.warning(f"[BUY ] Failed to check recent SELL orders: {e}")
+            self._sleep_buy_phase_cooldown("Recent SELL-order check unavailable.")
+            return False
+
+        if recent_sell_count >= threshold:
+            self._sleep_buy_phase_cooldown(
+                (
+                    f"Recent unfilled SELL orders in last "
+                    f"{format_duration(window_seconds)}: {recent_sell_count} >= {threshold}."
+                )
+            )
+            return False
+
+        self.logger.info(
+            (
+                f"[BUY ] Recent unfilled SELL orders in last "
+                f"{format_duration(window_seconds)}: {recent_sell_count} <= {threshold}."
+            )
+        )
+        return True
 
     def _get_best_prices(self):
         try:
@@ -467,11 +566,7 @@ class CoincheckTrader:
 
             active_buy_prices, active_sell_prices = self._get_active_order_prices()
             if active_buy_prices is None or active_sell_prices is None:
-                if self.sell_cooldown_seconds:
-                    self.logger.info(
-                        f"[BUY ] Active-order checks unavailable. Cooling down for {self.sell_cooldown_seconds} seconds."
-                    )
-                    time.sleep(self.sell_cooldown_seconds)
+                self._sleep_buy_phase_cooldown("Active-order checks unavailable.")
                 continue
 
             # Check existing active SELL orders before placing BUY.
@@ -480,22 +575,14 @@ class CoincheckTrader:
                 buy_qty,
                 active_sell_prices=active_sell_prices,
             ):
-                if self.sell_cooldown_seconds:
-                    self.logger.info(
-                        f"[BUY ] Conflict detected. Cooling down for {self.sell_cooldown_seconds} seconds."
-                    )
-                    time.sleep(self.sell_cooldown_seconds)
+                self._sleep_buy_phase_cooldown("Conflict detected.")
                 continue
 
             if self._has_conflicting_active_buy(
                 target_buy_price,
                 active_buy_prices=active_buy_prices,
             ):
-                if self.sell_cooldown_seconds:
-                    self.logger.info(
-                        f"[BUY ] Conflict detected. Cooling down for {self.sell_cooldown_seconds} seconds."
-                    )
-                    time.sleep(self.sell_cooldown_seconds)
+                self._sleep_buy_phase_cooldown("Conflict detected.")
                 continue
 
 
@@ -515,6 +602,9 @@ class CoincheckTrader:
                 ):
                     # After sleep, retry BUY phase from scratch.
                     continue
+
+            if not self._validate_recent_unfilled_sell_order_limit():
+                continue
 
             # 4. Place Order
             try:
