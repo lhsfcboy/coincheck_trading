@@ -15,10 +15,9 @@ base_logger = setup_logger_from_config(
 )
 logger = PrefixedLogger(base_logger, "[coincheck]")  # log前缀
 
-TRADE_AMOUNT_JPY_TARGET    = 10_000  # 买入目标金额（日元）
-TARGET_CYCLE_PROFIT        = 8.1     # 目标单次循环利润（JPY，动态价差计算基准）
-# 以上两个数值也实际上定义了每次盈利所需要的价格变化区间 价格需要变化3.1/10000   0.031%
-# 完成盈利循环需要的价差 RawSpread=3263.16.
+BASE_ORDER_SIZE            = 0.001   # 基础买入数量（BTC）
+BASE_CYCLE_PROFIT          = 8.1     # 基础单次循环利润（JPY，动态价差计算基准）
+# 以 0.001 BTC 下单时，完成盈利循环所需理论最小价差约为 8100 JPY。
 
 DEFAULT_WAIT_SECONDS       = 10      # 默认等待时间（秒）：用于API超时、轮询间隔、重试等待等
 COOLDOWN_SECONDS           = 60      # 通用冷却时间（秒）
@@ -34,8 +33,8 @@ def main():
         trader = CoincheckTrader(
             logger                  = logger,
 
-            trade_amount_jpy_target = TRADE_AMOUNT_JPY_TARGET,
-            target_cycle_profit     = TARGET_CYCLE_PROFIT,
+            base_order_size         = BASE_ORDER_SIZE,
+            target_cycle_profit     = BASE_CYCLE_PROFIT,
 
             default_wait_seconds    = DEFAULT_WAIT_SECONDS,
             sell_cooldown_seconds   = COOLDOWN_SECONDS,

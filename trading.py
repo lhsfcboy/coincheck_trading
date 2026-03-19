@@ -7,7 +7,7 @@ from crypto_common.exchange_coincheck import CoincheckApi, CoincheckBusinessErro
 from crypto_common.monitoring.context import send_email_from_config
 from crypto_common.monitoring.logger import PrefixedLogger
 from crypto_common.datatime.formatting import format_duration
-from crypto_common.trading_utils import calculate_buy_quantity, BalanceMonitor
+from crypto_common.trading_utils import BalanceMonitor
 
 DEFAULT_LOG_PREFIX = "[coincheck]"
 POST_ONLY_TIME_IN_FORCE = "post_only"  # Coincheck API does not expose SOK/FAS style values.
@@ -16,7 +16,7 @@ POST_ONLY_TIME_IN_FORCE = "post_only"  # Coincheck API does not expose SOK/FAS s
 class CoincheckTrader:
     def __init__(
         self,
-        trade_amount_jpy_target,
+        base_order_size,
         target_cycle_profit,
         logger,
         sell_cooldown_seconds,
@@ -57,9 +57,10 @@ class CoincheckTrader:
             logger=self.logger,
         )
         self.symbol = config.SYMBOL
-        self.min_qty = config.MIN_QUANTITY
-        self.buy_qty_decimal_places = config.QTY_DECIMAL_PLACES
-        self.trade_amount_jpy_target = trade_amount_jpy_target
+        self.min_qty = float(config.MIN_QUANTITY)
+        self.buy_qty_decimal_places = int(config.QTY_DECIMAL_PLACES)
+        self.base_order_size = float(base_order_size)
+        self.fixed_order_size = self._normalize_base_order_size(self.base_order_size)
         self.target_cycle_profit = float(target_cycle_profit)
         self.sell_cooldown_seconds = max(0, int(sell_cooldown_seconds))
         self.sell_timeout_seconds = max(0, int(sell_timeout_seconds))
@@ -254,16 +255,23 @@ class CoincheckTrader:
             self.logger.error(f"Failed to fetch best bid/ask: {e}")
             return None, None
 
-    def _calc_buy_qty(self, price):
+    def _normalize_base_order_size(self, requested_size):
+        if requested_size <= 0:
+            raise ValueError("base_order_size must be greater than 0.")
+
+        normalized_size = round(max(self.min_qty, requested_size), self.buy_qty_decimal_places)
+        if normalized_size != requested_size:
+            self.logger.info(
+                f"Configured BASE_ORDER_SIZE={requested_size} adjusted to {normalized_size} "
+                f"(MIN_QUANTITY={self.min_qty}, decimals={self.buy_qty_decimal_places})."
+            )
+        return normalized_size
+
+    def _calc_buy_qty(self):
         """
-        Qty = (target_jpy / price) -> round up to configured decimal places.
+        Uses a fixed base order size, while respecting the exchange minimum size.
         """
-        return calculate_buy_quantity(
-            self.trade_amount_jpy_target,
-            price,
-            decimal_places=self.buy_qty_decimal_places,
-            min_qty=self.min_qty,
-        )
+        return self.fixed_order_size
 
     def _calculate_dynamic_spread(self, qty):
         """
@@ -561,7 +569,7 @@ class CoincheckTrader:
             target_buy_price = best_bid
 
             # 3. Calc Qty
-            buy_qty = self._calc_buy_qty(target_buy_price)
+            buy_qty = self._calc_buy_qty()
             self.logger.info(f"Preparing BUY: Price={target_buy_price}, Qty={buy_qty}")
 
             active_buy_prices, active_sell_prices = self._get_active_order_prices()
@@ -777,7 +785,10 @@ class CoincheckTrader:
     def run(self):
         self.logger.info(f"=============================")
         self.logger.info(f"=============================")
-        self.logger.info(f"Starting Coincheck Trading Bot... [Target Cycle Profit: {self.target_cycle_profit} JPY]")
+        self.logger.info(
+            "Starting Coincheck Trading Bot... "
+            f"[Base Order Size: {self.fixed_order_size} BTC, Target Cycle Profit: {self.target_cycle_profit} JPY]"
+        )
 
         while True:
             try:
